@@ -18,7 +18,7 @@ func TestDecodeSI64Stream(t *testing.T) {
 	for _, v := range ints {
 		stream = append(stream, encodeSI64(v)...)
 	}
-	decoded := decodeSI64Stream(stream)
+	decoded := decodeStream[int64](stream)
 	if !reflect.DeepEqual(decoded, ints) {
 		t.Fatalf("decodeSI64Stream() == %02v, which did not match sint64 stream", decoded)
 	}
@@ -34,7 +34,7 @@ func TestDecodeU64Stream(t *testing.T) {
 	for _, v := range uints {
 		stream = append(stream, encodeU64(v)...)
 	}
-	decoded := decodeU64Stream(stream)
+	decoded := decodeStream[uint64](stream)
 	if !reflect.DeepEqual(decoded, uints) {
 		t.Fatalf("decodeU64Stream() == %02v, which did not match uint64 stream", decoded)
 	}

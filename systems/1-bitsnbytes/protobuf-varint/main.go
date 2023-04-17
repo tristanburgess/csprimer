@@ -12,7 +12,6 @@ import (
 var (
 	binPath  = flag.String("bin_path", "./tests/min.sint64", "path to the desired bin file to encode/decode")
 	dataType = flag.String("type", "", "data type to encode/decode (uint64, sint64)")
-	cmd      = flag.String("cmd", "decode", "command to run (encode, decode, decodeStream)")
 )
 
 const (
@@ -31,34 +30,35 @@ func decodeU64(bs []byte) uint64 {
 	return decoded
 }
 
-func decodeU64Stream(bs []byte) []uint64 {
-	decoded := make([]uint64, 0)
-
-	curBs := make([]byte, 0)
-	for _, b := range bs {
-		curBs = append(curBs, b)
-		if b&CONT_MASK == 0 {
-			decoded = append(decoded, decodeU64(curBs))
-			curBs = make([]byte, 0)
-		}
-	}
-
-	return decoded
-}
-
 func decodeSI64(bs []byte) int64 {
 	decoded := decodeU64(bs)
 	return int64((decoded >> 1) ^ -(decoded & 0x1))
 }
 
-func decodeSI64Stream(bs []byte) []int64 {
-	decoded := make([]int64, 0)
+func decodeStream[V uint64 | int64](bs []byte) []V {
+	decoded := make([]V, 0)
+
+	var appF func([]byte) []V
+	switch any(decoded).(type) {
+	case []uint64:
+		{
+			appF = func(curBs []byte) []V {
+				return append(decoded, V(decodeU64(curBs)))
+			}
+		}
+	case []int64:
+		{
+			appF = func(curBs []byte) []V {
+				return append(decoded, V(decodeSI64(curBs)))
+			}
+		}
+	}
 
 	curBs := make([]byte, 0)
 	for _, b := range bs {
 		curBs = append(curBs, b)
 		if b&CONT_MASK == 0 {
-			decoded = append(decoded, decodeSI64(curBs))
+			decoded = appF(curBs)
 			curBs = make([]byte, 0)
 		}
 	}
@@ -89,6 +89,36 @@ func encodeSI64(val int64) []byte {
 	return encodeU64(uint64(val+val) ^ -((uint64(val) & (1 << 63)) >> 63))
 }
 
+func encodeStream[V uint64 | int64](bs []byte) []byte {
+	ints := make([]V, 0, len(bs)/8)
+	for i := 0; i < len(bs); i += 8 {
+		cur := binary.BigEndian.Uint64(bs[i : i+8])
+		ints = append(ints, V(cur))
+	}
+	fmt.Fprintf(os.Stderr, "input stream: %#02v == %d\n", bs, ints)
+
+	stream := make([]byte, 0)
+	var appF func(V) []byte
+	switch any(ints).(type) {
+	case []uint64:
+		{
+			appF = func(v V) []byte {
+				return append(stream, encodeU64(uint64(v))...)
+			}
+		}
+	case []int64:
+		{
+			appF = func(v V) []byte {
+				return append(stream, encodeSI64(int64(v))...)
+			}
+		}
+	}
+	for _, v := range ints {
+		stream = appF(v)
+	}
+	return stream
+}
+
 func check(err error) {
 	if err != nil {
 		fmt.Println("ERROR:", err)
@@ -108,74 +138,31 @@ func main() {
 		*dataType = filepath.Ext(*binPath)[1:]
 	}
 
-	if *dataType != "uint64" && *dataType != "sint64" {
-		fmt.Printf("ERROR: invalid value: %s for command line argument 'dataType'\n", *dataType)
-		os.Exit(1)
-	}
-
-	switch *cmd {
-	case "encode":
+	var encF func([]byte) []byte
+	var decF func([]byte) interface{}
+	switch *dataType {
+	case "uint64":
 		{
-			if *dataType == "uint64" {
-				val := binary.BigEndian.Uint64(bs)
-				fmt.Fprintf(os.Stderr, "input: %#02v == %d\n", bs, val)
-				fmt.Fprintf(os.Stderr, "encoded: %#02v\n", encodeU64(val))
-			} else if *dataType == "sint64" {
-				val := int64(binary.BigEndian.Uint64(bs))
-				fmt.Fprintf(os.Stderr, "input: %#02v == %d\n", bs, val)
-				fmt.Fprintf(os.Stderr, "encoded: %#02v\n", encodeSI64(val))
+			encF = encodeStream[uint64]
+			decF = func(bs []byte) interface{} {
+				return decodeStream[uint64](bs)
 			}
 		}
-	case "decode":
+	case "sint64":
 		{
-			if *dataType == "uint64" {
-				val := binary.BigEndian.Uint64(bs)
-				fmt.Fprintf(os.Stderr, "input: %#02v == %d\n", bs, val)
-
-				encoded := encodeU64(val)
-				fmt.Fprintf(os.Stderr, "encoded: %#02v\n", encoded)
-				fmt.Fprintf(os.Stderr, "decoded: %d\n", decodeU64(encoded))
-			} else if *dataType == "sint64" {
-				val := int64(binary.BigEndian.Uint64(bs))
-				fmt.Fprintf(os.Stderr, "input: %#02v == %d\n", bs, val)
-
-				encoded := encodeSI64(val)
-				fmt.Fprintf(os.Stderr, "encoded: %#02v\n", encoded)
-				fmt.Fprintf(os.Stderr, "decoded: %d\n", decodeSI64(encoded))
-			}
-		}
-	case "decodeStream":
-		{
-			if *dataType == "uint64" {
-				uints := make([]uint64, 0, len(bs)/8)
-				for i := 0; i < len(bs); i += 8 {
-					uints = append(uints, binary.BigEndian.Uint64(bs[i:i+8]))
-				}
-				fmt.Fprintf(os.Stderr, "input: %#02v == %d\n", bs, uints)
-				stream := make([]byte, 0)
-				for _, v := range uints {
-					stream = append(stream, encodeU64(v)...)
-				}
-				fmt.Fprintf(os.Stderr, "encoded: %#02v\n", stream)
-				fmt.Fprintf(os.Stderr, "decoded: %d\n", decodeU64Stream(stream))
-			} else if *dataType == "sint64" {
-				ints := make([]int64, 0, len(bs)/8)
-				for i := 0; i < len(bs); i += 8 {
-					ints = append(ints, int64(binary.BigEndian.Uint64(bs[i:i+8])))
-				}
-				fmt.Fprintf(os.Stderr, "input: %#02v == %d\n", bs, ints)
-				stream := make([]byte, 0)
-				for _, v := range ints {
-					stream = append(stream, encodeSI64(v)...)
-				}
-				fmt.Fprintf(os.Stderr, "encoded: %#02v\n", stream)
-				fmt.Fprintf(os.Stderr, "decoded: %d\n", decodeSI64Stream(stream))
+			encF = encodeStream[int64]
+			decF = func(bs []byte) interface{} {
+				return decodeStream[int64](bs)
 			}
 		}
 	default:
 		{
-			fmt.Printf("ERROR: invalid value: %s for command line argument 'cmd'\n", *cmd)
+			fmt.Printf("ERROR: invalid value: %s for command line argument 'dataType'\n", *dataType)
 			os.Exit(1)
 		}
 	}
+
+	encodedStream := encF(bs)
+	fmt.Fprintf(os.Stderr, "encoded stream: %#02v\n", encodedStream)
+	fmt.Fprintf(os.Stderr, "decoded stream: %d\n", decF(encodedStream))
 }
