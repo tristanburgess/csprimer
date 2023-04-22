@@ -6,139 +6,94 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"strings"
-	"unicode"
 )
 
 var (
-	srcPath = flag.String("src_path", "", "path to source .css file")
+	srcPath = flag.String("src_path", "./tests/advanced.css", "path to source .css file")
 )
 
 type tokenKind int
 
 const (
-	tokBodyIdentBegin tokenKind = iota
-	tokBodyIdentEnd
-	tokCommentBegin
-	tokCommentBody
-	tokCommentEnd
-	tokTagIdent
-	tokValHexColor3or6
-	tokValHexColor4or8
+	tokOther tokenKind = iota
+	tokValHexColor
+	tokValRGBColor
 )
 
 func (s tokenKind) String() string {
 	switch s {
-	case tokBodyIdentBegin:
-		return "tokBodyIdentBegin"
-	case tokBodyIdentEnd:
-		return "tokBodyIdentEnd"
-	case tokCommentBegin:
-		return "tokCommentBegin"
-	case tokCommentBody:
-		return "tokCommentBody"
-	case tokCommentEnd:
-		return "tokCommentEnd"
-	case tokTagIdent:
-		return "tokTagIdent"
-	case tokValHexColor3or6:
-		return "tokValHexColor3or6"
-	case tokValHexColor4or8:
-		return "tokValHexColor4or8"
+	case tokOther:
+		return "tokOther"
+	case tokValHexColor:
+		return "tokValHexColor"
+	case tokValRGBColor:
+		return "tokValRGBColor"
 	default:
 		return "unknown"
 	}
 }
 
 type token struct {
-	Kind tokenKind
-	val  string
-}
-
-func hexToRGB(t token) token {
-	fmt.Printf("\ntest: %v\n", t)
-	return t
+	Kind    tokenKind
+	dataLen int
+	rawVal  string
 }
 
 func hexToRGBA(t token) token {
-	fmt.Printf("\ntest: %v\n", t)
+	t.Kind = tokValRGBColor
+	t.rawVal = t.rawVal[1 : len(t.rawVal)-1]
+	rgba := make([]byte, 4)
+	aStr := ""
+	digits := 3
+	if (len(t.rawVal))%4 == 0 {
+		aStr = "a"
+		digits = 4
+	}
+	digitsPerChannel := len(t.rawVal) / digits
+	for i := 0; i < len(t.rawVal); i++ {
+		idx := i / (digitsPerChannel)
+		// digitsPerChannel is only ever 1 or 2.
+		// If digitsPerChannel is 1, we adhere to the extension rule to copy
+		// the channel digit X to be interpreted as hex value XX.
+		// Otherwise, digitsPerChannel must be 2 and so we process
+		// each digit only once.
+		for j := 0; j < 3-digitsPerChannel; j++ {
+			rgba[idx] <<= 4
+			if t.rawVal[i] >= 'a' {
+				rgba[idx] += 10 + byte(t.rawVal[i]-'a')
+			} else {
+				rgba[idx] += byte(t.rawVal[i] - '0')
+			}
+		}
+	}
+	rgbStr := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		if rgba[i] > 0 && rgba[3] > 0 {
+			rgbStr[i] = fmt.Sprintf("%d / %.05f", rgba[i], float32(rgba[3])/255.0)
+		} else {
+			rgbStr[i] = fmt.Sprint(rgba[i])
+		}
+	}
+	t.rawVal = fmt.Sprintf("rgb%s(%s %s %s);", aStr, rgbStr[0], rgbStr[1], rgbStr[2])
 	return t
 }
 
 func tokenize(s string) ([]token, error) {
 	toks := make([]token, 0)
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) {
-			return -1
-		}
-		return r
-	}, s)
 
 	curVal := ""
-	commentInFlight := false
 	hexValLen := -1
 	for i, c := range s {
-		if commentInFlight && c != '*' && c != '/' {
-			curVal += string(c)
-			continue
-		}
-
 		switch c {
-		case '/':
-			{
-				curVal += string(c)
-				if len(curVal) >= 2 && curVal[len(curVal)-2:] == "*/" {
-					commentInFlight = false
-					toks = append(toks, token{
-						Kind: tokCommentBody,
-						val:  curVal[:len(curVal)-2],
-					}, token{
-						Kind: tokCommentEnd,
-						val:  "*/",
-					})
-					curVal = ""
-				}
-			}
-		case '*':
-			{
-				curVal += string(c)
-				if curVal == "/*" {
-					commentInFlight = true
-					toks = append(toks, token{
-						Kind: tokCommentBegin,
-						val:  curVal,
-					})
-					curVal = ""
-				}
-			}
-		case '{':
-			{
-				curVal += string(c)
-				toks = append(toks, token{
-					Kind: tokBodyIdentBegin,
-					val:  curVal,
-				})
-				curVal = ""
-			}
-		case '}':
-			{
-				toks = append(toks, token{
-					Kind: tokBodyIdentEnd,
-					val:  curVal,
-				})
-				curVal = ""
-			}
-		case ':':
-			{
-				curVal += string(c)
-				toks = append(toks, token{
-					Kind: tokTagIdent,
-					val:  curVal,
-				})
-				curVal = ""
-			}
 		case '#':
 			{
+				if len(curVal) > 0 {
+					toks = append(toks, token{
+						Kind:   tokOther,
+						rawVal: curVal,
+					})
+					curVal = ""
+				}
 				curVal += string(c)
 				hexValLen = 0
 			}
@@ -152,12 +107,7 @@ func tokenize(s string) ([]token, error) {
 					)
 				}
 
-				var k tokenKind
-				if hexValLen == 3 || hexValLen == 6 {
-					k = tokValHexColor3or6
-				} else if hexValLen == 4 || hexValLen == 8 {
-					k = tokValHexColor4or8
-				} else {
+				if hexValLen != 3 && hexValLen != 6 && hexValLen != 4 && hexValLen != 8 {
 					return nil, fmt.Errorf(
 						"hit invalid length hex value found ending at pos: %d while building cur value: %#v",
 						i, curVal,
@@ -175,8 +125,9 @@ func tokenize(s string) ([]token, error) {
 				}
 
 				toks = append(toks, token{
-					Kind: k,
-					val:  curVal,
+					Kind:    tokValHexColor,
+					dataLen: hexValLen,
+					rawVal:  curVal,
 				})
 				curVal = ""
 				hexValLen = -1
@@ -193,30 +144,25 @@ func tokenize(s string) ([]token, error) {
 		case 'A', 'B', 'C', 'D', 'E', 'F':
 			{
 				if hexValLen >= 0 {
-					curVal += strings.ToLower(string(c))
+					curVal += string(s[i] + ('a' - 'A'))
 					hexValLen += 1
 				} else {
 					curVal += string(c)
 				}
 			}
-		case '.', '-', 'g', 'G', 'h', 'H',
-			'i', 'I', 'j', 'J', 'k', 'K',
-			'l', 'L', 'm', 'M', 'n', 'N',
-			'o', 'O', 'p', 'P', 'q', 'Q',
-			'r', 'R', 's', 'S', 't', 'T',
-			'u', 'U', 'v', 'V', 'w', 'W',
-			'x', 'X', 'y', 'Y', 'z', 'Z':
+		default:
 			{
 				curVal += string(c)
 			}
-		default:
-			{
-				return nil, fmt.Errorf(
-					"hit unexpected string constant: %#v at pos: %d while building cur value: %#v",
-					string(c), i, curVal,
-				)
-			}
 		}
+	}
+
+	if len(curVal) > 0 {
+		toks = append(toks, token{
+			Kind:   tokOther,
+			rawVal: curVal,
+		})
+		curVal = ""
 	}
 
 	return toks, nil
@@ -238,18 +184,23 @@ func main() {
 	check(err)
 
 	srcText := string(bs)
-	fmt.Fprintf(os.Stderr, "src code text: %q\n", srcText)
+	fmt.Fprintf(os.Stderr, "src code text: %q\n\n", srcText)
 	toks, err := tokenize(srcText)
 	check(err)
-	fmt.Fprintf(os.Stderr, "src toks: %q\n", toks)
-	// WARNING: no parsing implemented past tokenization.
-	// assumes source program tokens form a valid syntax.
+
+	fmt.Fprintf(os.Stderr, "src toks: %q\n\n", toks)
 	for i, tok := range toks {
-		if tok.Kind == tokValHexColor3or6 {
-			toks[i] = hexToRGB(tok)
-		} else if tok.Kind == tokValHexColor4or8 {
+		if tok.Kind == tokValHexColor {
 			toks[i] = hexToRGBA(tok)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "xformed toks: %q", toks)
+	fmt.Fprintf(os.Stderr, "xformed toks: %q\n\n", toks)
+	xformedSrc := ""
+	for _, tok := range toks {
+		xformedSrc += fmt.Sprint(tok.rawVal)
+	}
+	fmt.Fprintf(os.Stderr, "xformed src code text: %q\n", xformedSrc)
+	fmt.Fprint(os.Stderr, "\n")
+
+	fmt.Print(xformedSrc)
 }
