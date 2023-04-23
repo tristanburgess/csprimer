@@ -6,13 +6,18 @@ import (
 	"time"
 )
 
+var (
+	STDIN = int(os.Stdin.Fd())
+)
+
 func main() {
-	prevState, err := termMakeCBreak(int(os.Stdin.Fd()))
+	termState, err := termMakeCBreak(STDIN)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	defer restore(int(os.Stdin.Fd()), prevState)
+	defer termRestore(termState, STDIN)
+
 	for {
 		b := make([]byte, 1)
 		_, err = os.Stdin.Read(b)

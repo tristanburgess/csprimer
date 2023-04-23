@@ -1,10 +1,10 @@
-// Copyright 2019 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package main
 
 import (
+	"os"
+	"os/signal"
+	"syscall"
+
 	"golang.org/x/sys/windows"
 )
 
@@ -13,20 +13,30 @@ type termState struct {
 }
 
 func termMakeCBreak(fd int) (*termState, error) {
-	var st uint32
-	if err := windows.GetConsoleMode(windows.Handle(fd), &st); err != nil {
+	var prevState uint32
+	if err := windows.GetConsoleMode(windows.Handle(fd), &prevState); err != nil {
 		return nil, err
 	}
-	newMode := st &^ (windows.ENABLE_ECHO_INPUT | windows.ENABLE_LINE_INPUT)
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		termRestore(&termState{prevState}, STDIN)
+		os.Exit(0)
+	}()
+
+	newState := prevState &^ (windows.ENABLE_ECHO_INPUT | windows.ENABLE_LINE_INPUT)
 	// Enable signal handling and ASCII control codes to continue to function
 	// https://learn.microsoft.com/en-us/windows/console/high-level-console-modes
-	newMode |= windows.ENABLE_PROCESSED_INPUT | windows.ENABLE_PROCESSED_OUTPUT
-	if err := windows.SetConsoleMode(windows.Handle(fd), newMode); err != nil {
+	newState |= windows.ENABLE_PROCESSED_INPUT | windows.ENABLE_PROCESSED_OUTPUT
+	if err := windows.SetConsoleMode(windows.Handle(fd), newState); err != nil {
 		return nil, err
 	}
-	return &termState{st}, nil
+
+	return &termState{prevState}, nil
 }
 
-func restore(fd int, s *termState) error {
-	return windows.SetConsoleMode(windows.Handle(fd), s.mode)
+func termRestore(t *termState, fd int) error {
+	return windows.SetConsoleMode(windows.Handle(fd), t.mode)
 }
