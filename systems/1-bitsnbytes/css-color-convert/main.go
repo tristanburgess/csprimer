@@ -42,7 +42,7 @@ type token struct {
 func hexToRGBA(t token) token {
 	t.Kind = tokValRGBColor
 	t.rawVal = t.rawVal[1 : len(t.rawVal)-1]
-	rgba := make([]int, 4)
+	rgba := make([]byte, 4)
 	aStr := ""
 	digits := 3
 	if (len(t.rawVal))%4 == 0 {
@@ -60,9 +60,9 @@ func hexToRGBA(t token) token {
 		for j := 0; j < 3-digitsPerChannel; j++ {
 			rgba[idx] <<= 4
 			if t.rawVal[i] >= 'a' {
-				rgba[idx] += 10 + int(t.rawVal[i]-'a')
+				rgba[idx] += 10 + byte(t.rawVal[i]-'a')
 			} else {
-				rgba[idx] += int(t.rawVal[i] - '0')
+				rgba[idx] += byte(t.rawVal[i] - '0')
 			}
 		}
 	}
